@@ -77,7 +77,7 @@ public class Main {
 
         @Override
         protected void subscribeActual(Subscriber<? super T> subscriber) {
-            MainSortMergedSubscription<T> subscription = new MainSortMergedSubscription<>(comparator, subscriber, subscriptions::remove);
+            MainSortMergedSubscription<T> subscription = new MainSortMergedSubscription<>(comparator, subscriber, subscriptions::remove, new ConstRequirementsManager(5L));
             subscriptions.add(subscription);
             for (Flowable<T> flowable : flowables) {
                 subscription.subscribeWith(flowable);
@@ -101,19 +101,20 @@ public class Main {
         private final SortedSet<Entry> mainSortedSetBuffer;
         private final List<Throwable> subscribersErrors;
         private final Subscriber<? super T> mainSubscriber;
-        private final Comparator<T> comparator;
         private final Consumer<MainSortMergedSubscription<T>> onTermination;
+        private final RequirementsManagement requirementsManagement;
         private long mainPendingItems;
         boolean canceled;
         boolean terminated;
 
         public MainSortMergedSubscription(Comparator<T> comparator,
                                           Subscriber<? super T> mainSubscriber,
-                                          Consumer<MainSortMergedSubscription<T>> onTermination) {
+                                          Consumer<MainSortMergedSubscription<T>> onTermination,
+                                          RequirementsManagement requirementsManagement) {
             mainSortedSetBuffer = new TreeSet<>(Comparator.comparing(Entry::item, UniqueRef.comparing(comparator)));
             this.mainSubscriber = mainSubscriber;
+            this.requirementsManagement = requirementsManagement;
             mainPendingItems = 0;
-            this.comparator = comparator;
             subscribersAll = new HashSet<>();
             subscribersWithNotDataRightNow = new HashSet<>();
             subscribersWithoutRequests = new HashSet<>();
@@ -149,7 +150,7 @@ public class Main {
         }
 
         private SortedMergedSubscriber<T> addSubscriber() {
-            SortedMergedSubscriber<T> subscriber = new SortedMergedSubscriber<>(this);
+            SortedMergedSubscriber<T> subscriber = new SortedMergedSubscriber<>(this, requirementsManagement.mangeSubscriber());
             subscribersAll.add(subscriber);
             subscribersWithNotDataRightNow.add(subscriber);
             subscribersWithoutRequests.add(subscriber);
@@ -250,18 +251,59 @@ public class Main {
         }
     }
 
+    public interface RequirementsManagement {
+        SubscribersRequirementsManagement mangeSubscriber();
+    }
+
+    public static class ConstRequirementsManager implements RequirementsManagement {
+        private final long goal;
+
+        public ConstRequirementsManager(long goal) {
+            this.goal = goal;
+        }
+
+        @Override
+        public SubscribersRequirementsManagement mangeSubscriber() {
+            return new SubscribersRequirementsManagement() {
+                @Override
+                public void onNext() {
+                }
+
+                @Override
+                public void onComplete() {
+                }
+
+                @Override
+                public long getRequestsGoal() {
+                    return goal;
+                }
+            };
+        }
+    }
+
+    public interface SubscribersRequirementsManagement {
+        void onNext();
+
+        void onComplete();
+
+        long getRequestsGoal();
+    }
+
     public static class SortedMergedSubscriber<T> implements Subscriber<T> {
         private static final AtomicInteger count = new AtomicInteger(0);
         private final int id = count.getAndIncrement();
         private final MainSortMergedSubscription<T> mainSubscription;
+        private final SubscribersRequirementsManagement subscribersRequirementsManagement;
         private Subscription subscription;
         private final Set<UniqueRef<T>> sortedSet;
         private long pendingItems;
 
-        private SortedMergedSubscriber(MainSortMergedSubscription<T> mainSubscription) {
+        private SortedMergedSubscriber(MainSortMergedSubscription<T> mainSubscription,
+                                       SubscribersRequirementsManagement subscribersRequirementsManagement) {
             this.mainSubscription = mainSubscription;
             sortedSet = new HashSet<>();
             pendingItems = 0L;
+            this.subscribersRequirementsManagement = subscribersRequirementsManagement;
         }
 
         @Override
@@ -275,6 +317,7 @@ public class Main {
                 UniqueRef<T> uniqueRef = UniqueRef.of(item);
                 sortedSet.add(uniqueRef);
                 pendingItems--;
+                subscribersRequirementsManagement.onNext();
                 mainSubscription.onSubscriberNext(this, uniqueRef);
             }
         }
@@ -289,6 +332,7 @@ public class Main {
 
         @Override
         public void onComplete() {
+            subscribersRequirementsManagement.onComplete();
             mainSubscription.onSubscriberComplete(this);
         }
 
@@ -315,7 +359,7 @@ public class Main {
         }
 
         private void ensureRequest() {
-            int goal = 2;
+            long goal = subscribersRequirementsManagement.getRequestsGoal();
             long pendingSize = this.pendingSize();
             if (pendingSize < goal) {
                 this.request(goal - pendingSize);
