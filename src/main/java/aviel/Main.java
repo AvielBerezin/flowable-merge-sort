@@ -19,7 +19,9 @@ public class Main {
     public static void main(String[] args) throws InterruptedException {
         Flowable.just("hello world").subscribe(System.out::println, System.err::println).dispose();
 
-        SortedMergedFlowable<Integer> mergedInts = new SortedMergedFlowable<Integer>(Comparator.naturalOrder());
+        SortedMergedFlowable<Integer> mergedInts = new SortedMergedFlowable<Integer>(Comparator.naturalOrder(),
+                                                                                     new BoundedTrafficBasedRequirementsManagement(30L));
+//                                                                                     new ConstRequirementsManagement(5L));
         Flowable<Integer> base =
                 Flowable.intervalRange(0, 5, 0, 100, TimeUnit.MILLISECONDS)
                         .onBackpressureBuffer(1, () -> LogManager.getLogger("buffer").info("overflew"), BackpressureOverflowStrategy.DROP_OLDEST)
@@ -68,16 +70,22 @@ public class Main {
         private final Comparator<T> comparator;
         private final Set<MainSortMergedSubscription<T>> subscriptions;
         private final List<Flowable<T>> flowables;
+        private final RequirementsManagement requirementsManagement;
 
-        public SortedMergedFlowable(Comparator<T> comparator) {
+        public SortedMergedFlowable(Comparator<T> comparator,
+                                    RequirementsManagement requirementsManagement) {
             this.comparator = comparator;
             subscriptions = Collections.newSetFromMap(new ConcurrentHashMap<>());
             flowables = new LinkedList<>();
+            this.requirementsManagement = requirementsManagement;
         }
 
         @Override
         protected void subscribeActual(Subscriber<? super T> subscriber) {
-            MainSortMergedSubscription<T> subscription = new MainSortMergedSubscription<>(comparator, subscriber, subscriptions::remove, new ConstRequirementsManager(5L));
+            MainSortMergedSubscription<T> subscription = new MainSortMergedSubscription<>(comparator,
+                                                                                          subscriber,
+                                                                                          subscriptions::remove,
+                                                                                          requirementsManagement);
             subscriptions.add(subscription);
             for (Flowable<T> flowable : flowables) {
                 subscription.subscribeWith(flowable);
@@ -255,10 +263,13 @@ public class Main {
         SubscribersRequirementsManagement mangeSubscriber();
     }
 
-    public static class ConstRequirementsManager implements RequirementsManagement {
+    public static class ConstRequirementsManagement implements RequirementsManagement {
         private final long goal;
 
-        public ConstRequirementsManager(long goal) {
+        public ConstRequirementsManagement(long goal) {
+            if (goal < 1) {
+                throw new IllegalArgumentException("goal cannot be less then 1: " + goal);
+            }
             this.goal = goal;
         }
 
@@ -278,6 +289,66 @@ public class Main {
                     return goal;
                 }
             };
+        }
+    }
+
+    public static class BoundedTrafficBasedRequirementsManagement implements RequirementsManagement {
+        private double total;
+        private final long bound;
+        private final double memoryCoefficient;
+        private final Set<BoundedTrafficBasedSubscribersRequirementsManagement> subscribersRequirementsManagements;
+
+        public BoundedTrafficBasedRequirementsManagement(long bound) {
+            if (bound < 1) {
+                throw new IllegalArgumentException("bound cannot be less then 1: " + bound);
+            }
+            this.total = 0D;
+            this.bound = bound;
+            memoryCoefficient = 0.95D;
+            subscribersRequirementsManagements = new HashSet<>();
+        }
+
+        @Override
+        public synchronized SubscribersRequirementsManagement mangeSubscriber() {
+            if (subscribersRequirementsManagements.size() >= bound) {
+                throw new IllegalStateException("subscribers amount is surpassing the bound " + bound);
+            }
+            BoundedTrafficBasedSubscribersRequirementsManagement subscribersRequirementsManagement = new BoundedTrafficBasedSubscribersRequirementsManagement();
+            subscribersRequirementsManagements.add(subscribersRequirementsManagement);
+            return subscribersRequirementsManagement;
+        }
+
+        private class BoundedTrafficBasedSubscribersRequirementsManagement implements SubscribersRequirementsManagement {
+            private double items = 0;
+
+            @Override
+            public void onNext() {
+                synchronized (BoundedTrafficBasedRequirementsManagement.this) {
+                    items = items * memoryCoefficient + 1D;
+                    for (BoundedTrafficBasedSubscribersRequirementsManagement subscribersRequirementsManagement : subscribersRequirementsManagements) {
+                        subscribersRequirementsManagement.items *= memoryCoefficient;
+                    }
+                    total = total * memoryCoefficient + 1D;
+                }
+            }
+
+            @Override
+            public void onComplete() {
+                synchronized (BoundedTrafficBasedRequirementsManagement.this) {
+                    subscribersRequirementsManagements.remove(this);
+                    total -= items;
+                }
+            }
+
+            @Override
+            public long getRequestsGoal() {
+                synchronized (BoundedTrafficBasedRequirementsManagement.this) {
+                    if (total == 0) {
+                        return Math.max(1, bound / subscribersRequirementsManagements.size());
+                    }
+                    return Math.max(1L, (long) (items / total * bound));
+                }
+            }
         }
     }
 
