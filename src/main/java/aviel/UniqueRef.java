@@ -22,11 +22,6 @@ public class UniqueRef<Item> {
         return "Unique[%d](%s)".formatted(id, item.toString());
     }
 
-    @Override
-    public final boolean equals(Object obj) {
-        return obj instanceof UniqueRef<?> uniqueRef && item.equals(uniqueRef.item);
-    }
-
     public static <Item> Comparator<UniqueRef<Item>> comparing(Comparator<Item> comparator) {
         return Comparator.<UniqueRef<Item>, Item>comparing(UniqueRef::get, comparator)
                          .thenComparingLong(ref -> ref.id);

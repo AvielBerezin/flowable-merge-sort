@@ -149,7 +149,7 @@ public class Main {
         }
 
         private SortedMergedSubscriber<T> addSubscriber() {
-            SortedMergedSubscriber<T> subscriber = new SortedMergedSubscriber<>(this, comparator);
+            SortedMergedSubscriber<T> subscriber = new SortedMergedSubscriber<>(this);
             subscribersAll.add(subscriber);
             subscribersWithNotDataRightNow.add(subscriber);
             subscribersWithoutRequests.add(subscriber);
@@ -255,13 +255,12 @@ public class Main {
         private final int id = count.getAndIncrement();
         private final MainSortMergedSubscription<T> mainSubscription;
         private Subscription subscription;
-        private final SortedSet<UniqueRef<T>> sortedSet;
+        private final Set<UniqueRef<T>> sortedSet;
         private long pendingItems;
 
-        private SortedMergedSubscriber(MainSortMergedSubscription<T> mainSubscription,
-                                       Comparator<T> comparator) {
+        private SortedMergedSubscriber(MainSortMergedSubscription<T> mainSubscription) {
             this.mainSubscription = mainSubscription;
-            sortedSet = new TreeSet<>(UniqueRef.comparing(comparator));
+            sortedSet = new HashSet<>();
             pendingItems = 0L;
         }
 
@@ -316,9 +315,10 @@ public class Main {
         }
 
         private void ensureRequest() {
+            int goal = 2;
             long pendingSize = this.pendingSize();
-            if (pendingSize < 2) {
-                this.request(2 - pendingSize);
+            if (pendingSize < goal) {
+                this.request(goal - pendingSize);
             }
         }
 
