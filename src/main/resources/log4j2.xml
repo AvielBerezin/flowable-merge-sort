@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Extra logging related to initialization of Log4j.
+ Set to debug or trace if log4j initialization is failing. -->
+<Configuration status="warn">
+    <Appenders>
+        <Console name="console" target="SYSTEM_OUT">
+            <!--            <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n"/>-->
+            <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSS} [%t] %-5p %-6c{1} - %m%n"/>
+        </Console>
+        <Async name="async" bufferSize="1024">
+            <AppenderRef ref="console"/>
+        </Async>
+    </Appenders>
+    <Loggers>
+        <Root level="debug" additivity="false">
+<!--            <AppenderRef ref="async"/>-->
+        </Root>
+        <Logger name="result" level="info" additivity="false">
+            <AppenderRef ref="async"/>
+        </Logger>
+    </Loggers>
+</Configuration>
