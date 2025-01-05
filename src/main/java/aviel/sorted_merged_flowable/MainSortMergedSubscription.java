@@ -88,6 +88,7 @@ public class MainSortMergedSubscription<T> implements Subscription {
         subscribersAll.remove(subscriber);
         subscribersWithNotDataRightNow.remove(subscriber);
         subscribersWithoutRequests.remove(subscriber);
+        tryEmit();
         tryTerminate();
     }
 
@@ -96,24 +97,8 @@ public class MainSortMergedSubscription<T> implements Subscription {
         subscribersWithNotDataRightNow.remove(subscriber);
         subscribersWithoutRequests.remove(subscriber);
         subscribersErrors.add(throwable);
+        tryEmit();
         tryTerminate();
-    }
-
-    private void tryTerminate() {
-        if (subscribersAll.isEmpty()) {
-            tryEmit();
-            if (subscribersErrors.isEmpty()) {
-                mainSubscriber.onComplete();
-            } else if (subscribersErrors.size() == 1) {
-                mainSubscriber.onError(new Exception("one of the subscribers erred", subscribersErrors.get(0)));
-            } else {
-                Exception exception = new Exception(subscribersErrors.size() + " subscribers erred ");
-                subscribersErrors.forEach(exception::addSuppressed);
-                mainSubscriber.onError(exception);
-            }
-            terminated = true;
-            onTermination.accept(this);
-        }
     }
 
     private void tryEmit() {
@@ -142,6 +127,22 @@ public class MainSortMergedSubscription<T> implements Subscription {
             for (SortedMergedSubscriber<T> source : sources) {
                 source.ensureRequest();
             }
+        }
+    }
+
+    private void tryTerminate() {
+        if (subscribersAll.isEmpty()) {
+            if (subscribersErrors.isEmpty()) {
+                mainSubscriber.onComplete();
+            } else if (subscribersErrors.size() == 1) {
+                mainSubscriber.onError(new Exception("one of the subscribers erred", subscribersErrors.get(0)));
+            } else {
+                Exception exception = new Exception(subscribersErrors.size() + " subscribers erred ");
+                subscribersErrors.forEach(exception::addSuppressed);
+                mainSubscriber.onError(exception);
+            }
+            terminated = true;
+            onTermination.accept(this);
         }
     }
 
