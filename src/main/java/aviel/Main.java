@@ -1,48 +1,42 @@
 package aviel;
 
+import aviel.requirements.ConstRequirementsManagement;
+import aviel.sorted_merged_flowable.SortedMergedFlowable;
 import io.reactivex.rxjava3.core.BackpressureOverflowStrategy;
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.disposables.Disposable;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.reactivestreams.Subscriber;
-import org.reactivestreams.Subscription;
 
-import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Comparator;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Consumer;
 
 public class Main {
     public static void main(String[] args) throws InterruptedException {
         Flowable.just("hello world").subscribe(System.out::println, System.err::println).dispose();
 
         SortedMergedFlowable<Integer> mergedInts = new SortedMergedFlowable<Integer>(Comparator.naturalOrder(),
-                                                                                     new BoundedTrafficBasedRequirementsManagement(30L));
-//                                                                                     new ConstRequirementsManagement(5L));
-        Flowable<Integer> base =
-                Flowable.intervalRange(0, 5, 0, 100, TimeUnit.MILLISECONDS)
-                        .onBackpressureBuffer(1, () -> LogManager.getLogger("buffer").info("overflew"), BackpressureOverflowStrategy.DROP_OLDEST)
-                        .map(Math::toIntExact);
-//                Flowable.range(0, 5);
-        mergedInts.add(base.map(x -> x * 3)
-                           .doOnNext(item -> loggerOf(0).info("next {}", item))
-                           .doOnComplete(() -> loggerOf(0).info("completed"))
-                           .doOnError(throwable -> loggerOf(0).error("erred", throwable)));
-        mergedInts.add(base.map(x -> x * 3 + 1)
-                           .doOnNext(item -> loggerOf(1).info("next {}", item))
-                           .doOnComplete(() -> loggerOf(1).info("completed"))
-                           .doOnError(throwable -> loggerOf(1).error("erred", throwable)));
-        mergedInts.add(base.map(x -> x * 3 + 2)
-                           .doOnNext(item -> loggerOf(2).info("next {}", item))
-                           .doOnComplete(() -> loggerOf(2).info("completed"))
-                           .doOnError(throwable -> loggerOf(2).error("erred", throwable)));
-        mergedInts.add(base.map(x -> x * 3)
-                           .doOnNext(item -> loggerOf(3).info("next {}", item))
-                           .doOnComplete(() -> loggerOf(3).info("completed"))
-                           .doOnError(throwable -> loggerOf(3).error("erred", throwable)));
+//                                                                                     new BoundedTrafficBasedRequirementsManagement(10L));
+                                                                                     new ConstRequirementsManagement(1L));
+        mergedInts.add(Flowable.intervalRange(0, 8, 0, 50, TimeUnit.MILLISECONDS)
+                               .onBackpressureBuffer(1, () -> LogManager.getLogger("buffer").info("overflew"), BackpressureOverflowStrategy.DROP_OLDEST)
+                               .map(Math::toIntExact).map(x -> x * 3)
+                               .doOnNext(item -> loggerOf(0).info("next {}", item))
+                               .doOnComplete(() -> loggerOf(0).info("completed"))
+                               .doOnError(throwable -> loggerOf(0).error("erred", throwable)));
+        mergedInts.add(Flowable.intervalRange(0, 6, 0, 75, TimeUnit.MILLISECONDS)
+                               .onBackpressureBuffer(1, () -> LogManager.getLogger("buffer").info("overflew"), BackpressureOverflowStrategy.DROP_OLDEST)
+                               .map(Math::toIntExact).map(x -> x * 3 + 1)
+                               .doOnNext(item -> loggerOf(1).info("next {}", item))
+                               .doOnComplete(() -> loggerOf(1).info("completed"))
+                               .doOnError(throwable -> loggerOf(1).error("erred", throwable)));
+        mergedInts.add(Flowable.intervalRange(0, 4, 0, 100, TimeUnit.MILLISECONDS)
+                               .onBackpressureBuffer(1, () -> LogManager.getLogger("buffer").info("overflew"), BackpressureOverflowStrategy.DROP_OLDEST)
+                               .map(Math::toIntExact).map(x -> x * 3 + 2)
+                               .doOnNext(item -> loggerOf(2).info("next {}", item))
+                               .doOnComplete(() -> loggerOf(2).info("completed"))
+                               .doOnError(throwable -> loggerOf(2).error("erred", throwable)));
 
         Logger resultLogger = LogManager.getLogger("result");
         CountDownLatch latch = new CountDownLatch(1);
@@ -62,394 +56,7 @@ public class Main {
         }
     }
 
-    private static Logger loggerOf(int id) {
+    public static Logger loggerOf(int id) {
         return LogManager.getLogger(Integer.toString(id));
-    }
-
-    public static class SortedMergedFlowable<T> extends Flowable<T> {
-        private final Comparator<T> comparator;
-        private final Set<MainSortMergedSubscription<T>> subscriptions;
-        private final List<Flowable<T>> flowables;
-        private final RequirementsManagement requirementsManagement;
-
-        public SortedMergedFlowable(Comparator<T> comparator,
-                                    RequirementsManagement requirementsManagement) {
-            this.comparator = comparator;
-            subscriptions = Collections.newSetFromMap(new ConcurrentHashMap<>());
-            flowables = new LinkedList<>();
-            this.requirementsManagement = requirementsManagement;
-        }
-
-        @Override
-        protected void subscribeActual(Subscriber<? super T> subscriber) {
-            MainSortMergedSubscription<T> subscription = new MainSortMergedSubscription<>(comparator,
-                                                                                          subscriber,
-                                                                                          subscriptions::remove,
-                                                                                          requirementsManagement);
-            subscriptions.add(subscription);
-            for (Flowable<T> flowable : flowables) {
-                subscription.subscribeWith(flowable);
-            }
-            subscriber.onSubscribe(subscription);
-        }
-
-        private void add(Flowable<T> flowable) {
-            flowables.add(flowable);
-            for (MainSortMergedSubscription<T> subscription : subscriptions) {
-                subscription.subscribeWith(flowable);
-            }
-        }
-    }
-
-    private static class MainSortMergedSubscription<T> implements Subscription {
-        private final Set<SortedMergedSubscriber<T>> subscribersAll;
-        private final Set<SortedMergedSubscriber<T>> subscribersWithNotDataRightNow;
-        private final Set<SortedMergedSubscriber<T>> subscribersWithoutRequests;
-
-        private final SortedSet<Entry> mainSortedSetBuffer;
-        private final List<Throwable> subscribersErrors;
-        private final Subscriber<? super T> mainSubscriber;
-        private final Consumer<MainSortMergedSubscription<T>> onTermination;
-        private final RequirementsManagement requirementsManagement;
-        private long mainPendingItems;
-        boolean canceled;
-        boolean terminated;
-
-        public MainSortMergedSubscription(Comparator<T> comparator,
-                                          Subscriber<? super T> mainSubscriber,
-                                          Consumer<MainSortMergedSubscription<T>> onTermination,
-                                          RequirementsManagement requirementsManagement) {
-            mainSortedSetBuffer = new TreeSet<>(Comparator.comparing(Entry::item, UniqueRef.comparing(comparator)));
-            this.mainSubscriber = mainSubscriber;
-            this.requirementsManagement = requirementsManagement;
-            mainPendingItems = 0;
-            subscribersAll = new HashSet<>();
-            subscribersWithNotDataRightNow = new HashSet<>();
-            subscribersWithoutRequests = new HashSet<>();
-            subscribersErrors = new LinkedList<>();
-            this.onTermination = onTermination;
-            canceled = false;
-            terminated = false;
-        }
-
-        @Override
-        public synchronized void request(long count) {
-            mainPendingItems += count;
-            for (SortedMergedSubscriber<T> subscriber : subscribersWithoutRequests) {
-                subscriber.ensureRequest();
-            }
-            tryEmit();
-        }
-
-        @Override
-        public synchronized void cancel() {
-            if (!canceled) {
-                for (SortedMergedSubscriber<T> subscriber : subscribersAll) {
-                    subscriber.cancel();
-                }
-            }
-            canceled = true;
-        }
-
-        public synchronized void subscribeWith(Flowable<T> flowable) {
-            if (!terminated) {
-                flowable.subscribe(this.addSubscriber());
-            }
-        }
-
-        private SortedMergedSubscriber<T> addSubscriber() {
-            SortedMergedSubscriber<T> subscriber = new SortedMergedSubscriber<>(this, requirementsManagement.mangeSubscriber());
-            subscribersAll.add(subscriber);
-            subscribersWithNotDataRightNow.add(subscriber);
-            subscribersWithoutRequests.add(subscriber);
-            return subscriber;
-        }
-
-        public synchronized void onSubscriberNext(SortedMergedSubscriber<T> subscriber, UniqueRef<T> item) {
-            LogManager.getLogger().debug("got next {} on {}", item, subscriber);
-            mainSortedSetBuffer.add(new Entry(subscriber, item));
-            subscribersWithNotDataRightNow.remove(subscriber);
-            if (subscriber.pendingItems() <= 0L) {
-                subscribersWithoutRequests.add(subscriber);
-            }
-            tryEmit();
-        }
-
-        public synchronized void onSubscriberComplete(SortedMergedSubscriber<T> subscriber) {
-            subscribersAll.remove(subscriber);
-            subscribersWithNotDataRightNow.remove(subscriber);
-            subscribersWithoutRequests.remove(subscriber);
-            tryTerminate();
-        }
-
-        public synchronized void onSubscriberError(SortedMergedSubscriber<T> subscriber, Throwable throwable) {
-            subscribersAll.remove(subscriber);
-            subscribersWithNotDataRightNow.remove(subscriber);
-            subscribersWithoutRequests.remove(subscriber);
-            subscribersErrors.add(throwable);
-            tryTerminate();
-        }
-
-        private void tryTerminate() {
-            if (subscribersAll.isEmpty()) {
-                tryEmit();
-                if (subscribersErrors.isEmpty()) {
-                    mainSubscriber.onComplete();
-                } else if (subscribersErrors.size() == 1) {
-                    mainSubscriber.onError(new Exception("one of the subscribers erred", subscribersErrors.get(0)));
-                } else {
-                    Exception exception = new Exception(subscribersErrors.size() + " subscribers erred ");
-                    subscribersErrors.forEach(exception::addSuppressed);
-                    mainSubscriber.onError(exception);
-                }
-                terminated = true;
-                onTermination.accept(this);
-            }
-        }
-
-        private void tryEmit() {
-            Set<SortedMergedSubscriber<T>> sources = new HashSet<>();
-            while (mainPendingItems > 0 && subscribersWithNotDataRightNow.isEmpty()) {
-                LogManager.getLogger("result").debug("mainSortedSetBuffer: {}", mainSortedSetBuffer);
-                LogManager.getLogger("result").debug("subscribers: {}", subscribersAll);
-                LogManager.getLogger("result").debug("subscribersPending: {}", subscribersWithNotDataRightNow);
-                Entry first;
-                try {
-                    first = mainSortedSetBuffer.first();
-                } catch (NoSuchElementException e) {
-                    return;
-                }
-                mainSortedSetBuffer.remove(first);
-                first.source().remove(first.item());
-                sources.add(first.source());
-                if (first.source().currentlyEmpty() && subscribersAll.contains(first.source())) {
-                    subscribersWithNotDataRightNow.add(first.source());
-                }
-                mainSubscriber.onNext(first.item().get());
-                mainPendingItems--;
-            }
-            if (mainPendingItems > 0) {
-                for (SortedMergedSubscriber<T> source : sources) {
-                    source.ensureRequest();
-                }
-            }
-        }
-
-        private class Entry {
-            private final UniqueRef<T> item;
-            private final SortedMergedSubscriber<T> source;
-
-            private Entry(SortedMergedSubscriber<T> source, UniqueRef<T> item) {
-                this.item = item;
-                this.source = source;
-            }
-
-            public UniqueRef<T> item() {
-                return item;
-            }
-
-            public SortedMergedSubscriber<T> source() {
-                return source;
-            }
-
-            @Override
-            public String toString() {
-                return "[%s] %s".formatted(source.toString(), item.toString());
-            }
-        }
-    }
-
-    public interface RequirementsManagement {
-        SubscribersRequirementsManagement mangeSubscriber();
-    }
-
-    public static class ConstRequirementsManagement implements RequirementsManagement {
-        private final long goal;
-
-        public ConstRequirementsManagement(long goal) {
-            if (goal < 1) {
-                throw new IllegalArgumentException("goal cannot be less then 1: " + goal);
-            }
-            this.goal = goal;
-        }
-
-        @Override
-        public SubscribersRequirementsManagement mangeSubscriber() {
-            return new SubscribersRequirementsManagement() {
-                @Override
-                public void onNext() {
-                }
-
-                @Override
-                public void onComplete() {
-                }
-
-                @Override
-                public long getRequestsGoal() {
-                    return goal;
-                }
-            };
-        }
-    }
-
-    public static class BoundedTrafficBasedRequirementsManagement implements RequirementsManagement {
-        private double total;
-        private final long bound;
-        private final double memoryCoefficient;
-        private final Set<BoundedTrafficBasedSubscribersRequirementsManagement> subscribersRequirementsManagements;
-
-        public BoundedTrafficBasedRequirementsManagement(long bound) {
-            if (bound < 1) {
-                throw new IllegalArgumentException("bound cannot be less then 1: " + bound);
-            }
-            this.total = 0D;
-            this.bound = bound;
-            memoryCoefficient = 0.95D;
-            subscribersRequirementsManagements = new HashSet<>();
-        }
-
-        @Override
-        public synchronized SubscribersRequirementsManagement mangeSubscriber() {
-            if (subscribersRequirementsManagements.size() >= bound) {
-                throw new IllegalStateException("subscribers amount is surpassing the bound " + bound);
-            }
-            BoundedTrafficBasedSubscribersRequirementsManagement subscribersRequirementsManagement = new BoundedTrafficBasedSubscribersRequirementsManagement();
-            subscribersRequirementsManagements.add(subscribersRequirementsManagement);
-            return subscribersRequirementsManagement;
-        }
-
-        private class BoundedTrafficBasedSubscribersRequirementsManagement implements SubscribersRequirementsManagement {
-            private double items = 0;
-
-            @Override
-            public void onNext() {
-                synchronized (BoundedTrafficBasedRequirementsManagement.this) {
-                    items = items * memoryCoefficient + 1D;
-                    for (BoundedTrafficBasedSubscribersRequirementsManagement subscribersRequirementsManagement : subscribersRequirementsManagements) {
-                        subscribersRequirementsManagement.items *= memoryCoefficient;
-                    }
-                    total = total * memoryCoefficient + 1D;
-                }
-            }
-
-            @Override
-            public void onComplete() {
-                synchronized (BoundedTrafficBasedRequirementsManagement.this) {
-                    subscribersRequirementsManagements.remove(this);
-                    total -= items;
-                }
-            }
-
-            @Override
-            public long getRequestsGoal() {
-                synchronized (BoundedTrafficBasedRequirementsManagement.this) {
-                    if (total == 0) {
-                        return Math.max(1, bound / subscribersRequirementsManagements.size());
-                    }
-                    return Math.max(1L, (long) (items / total * bound));
-                }
-            }
-        }
-    }
-
-    public interface SubscribersRequirementsManagement {
-        void onNext();
-
-        void onComplete();
-
-        long getRequestsGoal();
-    }
-
-    public static class SortedMergedSubscriber<T> implements Subscriber<T> {
-        private static final AtomicInteger count = new AtomicInteger(0);
-        private final int id = count.getAndIncrement();
-        private final MainSortMergedSubscription<T> mainSubscription;
-        private final SubscribersRequirementsManagement subscribersRequirementsManagement;
-        private Subscription subscription;
-        private final Set<UniqueRef<T>> sortedSet;
-        private long pendingItems;
-
-        private SortedMergedSubscriber(MainSortMergedSubscription<T> mainSubscription,
-                                       SubscribersRequirementsManagement subscribersRequirementsManagement) {
-            this.mainSubscription = mainSubscription;
-            sortedSet = new HashSet<>();
-            pendingItems = 0L;
-            this.subscribersRequirementsManagement = subscribersRequirementsManagement;
-        }
-
-        @Override
-        public void onSubscribe(Subscription subscription) {
-            this.subscription = subscription;
-        }
-
-        @Override
-        public void onNext(T item) {
-            synchronized (mainSubscription) {
-                UniqueRef<T> uniqueRef = UniqueRef.of(item);
-                sortedSet.add(uniqueRef);
-                pendingItems--;
-                subscribersRequirementsManagement.onNext();
-                mainSubscription.onSubscriberNext(this, uniqueRef);
-            }
-        }
-
-        @Override
-        public void onError(Throwable throwable) {
-            synchronized (mainSubscription) {
-                mainSubscription.cancel();
-                mainSubscription.onSubscriberError(this, throwable);
-            }
-        }
-
-        @Override
-        public void onComplete() {
-            subscribersRequirementsManagement.onComplete();
-            mainSubscription.onSubscriberComplete(this);
-        }
-
-        public void cancel() {
-            synchronized (mainSubscription) {
-                subscription.cancel();
-            }
-        }
-
-        public boolean currentlyEmpty() {
-            synchronized (mainSubscription) {
-                return sortedSet.isEmpty();
-            }
-        }
-
-        public void remove(UniqueRef<T> item) {
-            synchronized (mainSubscription) {
-                sortedSet.remove(item);
-            }
-        }
-
-        public long pendingItems() {
-            return pendingItems;
-        }
-
-        private void ensureRequest() {
-            long goal = subscribersRequirementsManagement.getRequestsGoal();
-            long pendingSize = this.pendingSize();
-            if (pendingSize < goal) {
-                this.request(goal - pendingSize);
-            }
-        }
-
-        private long pendingSize() {
-            return this.sortedSet.size() + this.pendingItems;
-        }
-
-        private void request(long count) {
-            loggerOf(id).info("requesting {}", count);
-            subscription.request(count);
-            pendingItems += count;
-        }
-
-        @Override
-        public String toString() {
-            return Integer.toString(id);
-        }
     }
 }
